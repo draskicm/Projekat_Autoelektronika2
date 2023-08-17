@@ -407,9 +407,9 @@ void main_demo(void)
 
 //ispis poruke na serijsku
 static void SerialWrite(void* pvParameters) {
-	uint8_t priv = 0;
+	uint8_t priv = (uint8_t)0;
 	uint8_t p[70];
-	uint8_t duzina = 0;
+	uint8_t duzina = (uint8_t)0;
 
 	for (;;) {
 		xSemaphoreTake(TBE_BS_2, portMAX_DELAY); //ceka se da bude prazan
@@ -444,7 +444,7 @@ static void SerialSend_Task0(void* pvParameters) {
 }
 
 /* Sa ovim taskom simuliramo vrednost trenutne temperature koja stize sa senzora svakih 200ms, tako sto
-   svakih 200ms saljemo karakter 'A' i u AdvUniCom simulatoru omogucimo tu opciju (AUTO ukljucen) */
+   svakih 200ms saljemo karakter 'a' i u AdvUniCom simulatoru omogucimo tu opciju (AUTO ukljucen) */
 static void SerialSend_Task1(void* pvParameters) {
 	uint8_t prim = (uint8_t)'a';
 
@@ -494,7 +494,7 @@ static void primljeno_sa_senzora(void* pvParameters) {
 
 static void primljeno_sa_kanal0(void* pvParameters) {
 	double senzor1 = 0;
-	uint8_t cc = 0;
+	uint8_t cc = (uint8_t)0;
 	uint8_t broj_karak = (uint8_t)0;
 	uint8_t temp_kanal0[7] = { 0 };
 
@@ -522,7 +522,7 @@ static void primljeno_sa_kanal0(void* pvParameters) {
 
 static void primljeno_sa_kanal1(void* pvParameters) {
 	double senzor2 = 0;
-	uint8_t cc = 0;
+	uint8_t cc = (uint8_t)0;
 	uint8_t broj_karak = (uint8_t)0;
 	uint8_t temp_kanal1[7] = { 0 };
 
@@ -550,8 +550,8 @@ static void primljeno_sa_kanal1(void* pvParameters) {
 
 //ucitavanje komande poruke sa kanala 2
 static void SerialReceive_Task(void* pvParameters) {
-	uint8_t cc = 0;
-	uint8_t duzina = 0;
+	uint8_t cc = (uint8_t)0;
+	uint8_t duzina = (uint8_t)0;
 	uint8_t prom = (uint8_t)0;
 	uint8_t prom_buff[12];
 
@@ -581,5 +581,77 @@ static void SerialReceive_Task(void* pvParameters) {
 
 static void obrada_podataka(void* pvParameters)
 {
-	
+	podaci_za_stanje* stanje;
+	uint8_t buff[12] = { 0 };
+	uint8_t duzina = (uint8_t)0;
+
+	uint8_t pomocni_niz[70] = { 0 };
+	uint8_t duzina_niza_ispis = (uint8_t)0;
+
+	uint8_t zeljena_temp = (uint8_t)0;
+	double histerezis = 0.1;
+
+	uint8_t podaci_za_stanje[3] = { 0 };
+
+	xQueueReceive(serijska_prijem_duzina, &duzina, pdMS_TO_TICKS(30)); //primi komandnu poruku
+	xQueueReceive(serijska_prijem_niz, &buff, pdMS_TO_TICKS(30)); //primi duzinu komandne poruke
+
+		/* ispitujemo sta je stiglo (AUTOMATSKI, MANUELNO, zeljena_temp ili histerezis) i ono sto treba ispisujemo na serijsku */
+
+	if ((duzina == sizeof("AUTOMATSKI") - 1) && (strncmp(buff, ("AUTOMATSKI"), duzina) == 0)) { //uporedjivanje stringova
+		printf("Dobro uneseno AUTOMATSKI \n");
+
+		xSemaphoreTake(mutex_serijska, portMAX_DELAY);
+		strcpy(pomocni_niz, "OK AUTOMATSKI");
+		duzina_niza_ispis = sizeof("OK AUTOMATSKI") - 1;
+		xQueueSend(serijska_ispis_queue, &pomocni_niz, 0U);
+		xQueueSend(serijska_ispis_duzina, &duzina_niza_ispis, 0U);
+		send_serial_character(COM_CH2, 13);
+		xSemaphoreTake(semafor1, portMAX_DELAY);
+		xSemaphoreGive(mutex_serijska);
+
+		automatski = 1;
+	}
+
+	else if ((duzina == sizeof("MANUELNO") - 1) && (strncmp(buff, ("MANUELNO"), duzina) == 0))
+	{
+		automatski = 0;
+		printf("Dobro uneseno MANUELNO\n");
+
+		xSemaphoreTake(mutex_serijska, portMAX_DELAY);
+		strcpy(pomocni_niz, "OK MANUELNO");
+		duzina_niza_ispis = sizeof("OK MANUELNO") - 1;
+		xQueueSend(serijska_ispis_queue, &pomocni_niz, 0U);
+		xQueueSend(serijska_ispis_duzina, &duzina_niza_ispis, 0U);
+		send_serial_character(COM_CH2, 13);
+		xSemaphoreTake(semafor1, portMAX_DELAY);
+		xSemaphoreGive(mutex_serijska);
+	}
+	/* ukljucujemo ili iskljucujemo signalne lampice na led baru u zavisnosti da li je ukljucena ili iskljucena klima i da li je ventilator
+		aktivan ili je neaktivan (ukljuceno drugi stubac prva lampica, ventilator treci stubac prva lampica)*/
+		/*ako je ukljuceno i ako je automatski, onda imamo automatsko upravljanje kao na PLC-ovima sto smo radili, a manuelno uvek duva*/
+
+	if (ukljuceno) {
+		if (automatski == 1) {
+			if (trenutna_temp > (double)zeljena_temp + histerezis) {
+				set_LED_BAR(2, 0x01);
+			}
+			else {
+				set_LED_BAR(2, 0x00);
+			}
+		}
+		else {
+			set_LED_BAR(2, 0x01);
+		}
+	}
+	else {
+		set_LED_BAR(2, 0x00);
+	}
+
+	xQueueSend(seg7automatski_queue, &automatski, 0U);
+	podaci_za_stanje[0] = (uint8_t)trenutna_temp;
+	podaci_za_stanje[1] = ukljuceno;
+	podaci_za_stanje[2] = automatski;
+	xQueueSend(formi, &podaci_za_stanje, 0U);
 }
+
